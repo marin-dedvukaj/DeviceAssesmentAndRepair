@@ -85,7 +85,7 @@ class DeviceChecklistBackend:
         csv_name_or_sn: str,
         category: str,
         item: str,
-        status: str = "check",
+        status: str = "no check",
         comment: str = "",
     ) -> dict[str, str]:
         """Add one checklist item to a device CSV."""

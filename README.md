@@ -9,11 +9,11 @@ The application stores each device as a CSV file, tracks checklist status by rep
 - Create, edit, and delete device records.
 - Track device status: `received`, `tested`, `dismantled`, `notFixable`, and `fixed`.
 - Load checklist sections from `source/checklist_config.json`.
-- Checklist boxes are checked by default.
+- Checklist boxes are unchecked by default.
 - Add comments for each checklist item.
 - Capture a photo from a connected camera when OpenCV is installed.
 - Attach an existing image when camera capture is unavailable.
-- Generate PDF reports in the `Reports` folder.
+- Generate PDF reports and open them in the browser or system PDF viewer.
 - Store device CSV files and photos under the `data` folder.
 
 ## Requirements
@@ -60,13 +60,12 @@ DeviceAssesmentAndRepair/
   data/
     devices/
     photos/
-  Reports/
   Logo.jpeg
   Logo.ico
   README.md
 ```
 
-`data` and `Reports` are created automatically when the app runs.
+`data` is created automatically when the app runs. PDF reports are generated in the system temporary folder when opened.
 
 ## Checklist Configuration
 
@@ -111,15 +110,11 @@ Photos are saved in:
 data/photos/
 ```
 
-Reports are saved in:
-
-```text
-Reports/
-```
+PDF reports are generated in the system temporary folder and opened automatically.
 
 ## PDF Reports
 
-Use **Print report** after selecting a device. Reports include:
+Use **Print report** after selecting a device. The report opens automatically in the browser or system PDF viewer. Reports include:
 
 - Device serial number and date.
 - Any unchecked checklist items.
@@ -142,7 +137,7 @@ The built executable will be created in the `dist` folder.
 
 ## Notes
 
-- Existing blank checklist statuses are treated as checked by default.
+- Existing blank checklist statuses are treated as unchecked by default.
 - Manually unchecked boxes are saved as `no check`.
 - Checked boxes are saved as `check`.
-- New checklist items are created as checked.
+- New checklist items are created as unchecked.

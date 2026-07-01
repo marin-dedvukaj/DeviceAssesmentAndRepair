@@ -5,7 +5,9 @@ import html
 import json
 import shutil
 import sys
+import tempfile
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -333,7 +335,9 @@ class DeviceChecklistApp(tk.Tk):
         try:
             self._ensure_configured_checklist_items(self.selected_file_name)
             report_path = self._build_device_report(self.selected_file_name)
-            messagebox.showinfo("Print Report", f"Saved report:\n{report_path}", parent=self)
+            opened = webbrowser.open(report_path.as_uri())
+            if not opened:
+                messagebox.showinfo("Print Report", f"Report created:\n{report_path}", parent=self)
         except Exception as exc:
             messagebox.showerror("Print Report", str(exc), parent=self)
 
@@ -412,7 +416,7 @@ class DeviceChecklistApp(tk.Tk):
             Spacer(1, 0.2 * inch),
         ]
 
-        unchecked_rows = [row for row in rows if row["Status"] == "no check"]
+        unchecked_rows = [row for row in rows if row["Status"] != "check"]
         story.append(Paragraph("Unchecked Items", heading_style))
         if unchecked_rows:
             story.append(self._rows_table(unchecked_rows, include_status=True))
@@ -487,7 +491,7 @@ class DeviceChecklistApp(tk.Tk):
         headers = ["Category", "Item", "Status", "Comment"] if include_status else ["Category", "Item", "Comment"]
         data = [headers]
         for row in rows:
-            status = "Unchecked" if row["Status"] == "no check" else "Checked"
+            status = "Checked" if row["Status"] == "check" else "Unchecked"
             values = [row["Category"], row["Item"], status, row["Comment"]] if include_status else [
                 row["Category"],
                 row["Item"],
@@ -528,7 +532,8 @@ class DeviceChecklistApp(tk.Tk):
     def _report_path(self, file_name: str, sn: str, device_date: str) -> Path:
         device_stem = Path(file_name).stem
         safe_name = f"{self.backend._safe_title_part(sn)}-{self.backend._safe_title_part(device_date)}"
-        return self.reports_location / device_stem / f"{safe_name}.pdf"
+        report_folder = Path(tempfile.gettempdir()) / "DeviceChecklistReports" / device_stem
+        return report_folder / f"{safe_name}.pdf"
 
     def _device_photo_paths(self, file_name: str) -> list[Path]:
         photo_folder = self.photos_location / Path(file_name).stem
@@ -927,7 +932,7 @@ class ChecklistWindow(tk.Toplevel):
         )
 
     def _status_is_checked(self, status: str) -> bool:
-        return status != "no check"
+        return status == "check"
 
     def _checked_status(self, checked_var: tk.BooleanVar) -> str:
         return "check" if checked_var.get() else "no check"
