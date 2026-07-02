@@ -2,13 +2,18 @@
 
 Desktop checklist logger for device assessment, disassembly, assembly, final testing, photos, and PDF reports.
 
-The application stores each device as a CSV file, tracks checklist status by repair stage, saves optional photos, and generates a PDF report with unchecked items, final test results, and device images.
+The application stores each device as a CSV file, tracks checklist status by repair stage, saves optional photos, and generates a PDF report with problems found, final test results, and device images.
 
 ## Features
 
 - Create, edit, and delete device records.
 - Add a device comment to make records easier to identify.
 - Search and sort the device table.
+- View dashboard counters by device status.
+- Filter the device table by status.
+- Show each device's last updated time.
+- Export the visible device table to CSV.
+- Preview or open saved photos for the selected device from Reports.
 - Track device status: `received`, `tested`, `dismantled`, `notFixable`, and `fixed`.
 - Load checklist sections from `source/checklist_config.json`.
 - Checklist boxes are unchecked by default.
@@ -133,18 +138,28 @@ PDF reports are generated in the system temporary folder and opened automaticall
 
 ## PDF Reports
 
-Use **Print report** to choose between a selected-device report and an all-devices table report. Reports open automatically in the browser or system PDF viewer.
+Use **Reports** to choose between a selected-device report, an all-devices table report, exporting the visible table to CSV, or previewing selected-device photos. Reports open automatically in the browser or system PDF viewer.
 
 Selected-device reports include:
 
 - Device serial number and date.
 - Device comment.
-- Any unchecked checklist items.
+- Problems found.
 - Final test checklist results.
 - Saved photos for the device.
 - The project logo when a supported logo file is present.
 
 All-devices reports include the device table with serial number, date, status, comment, and CSV filename.
+
+## Table Workflow
+
+The main device table includes dashboard counters, status filters, search, sortable columns, and a last-updated column based on each device CSV file's modified time.
+
+Use **Reports** > **Export visible table CSV** to export the currently visible table after search and status filters are applied.
+
+Use **Reports** > **Preview selected device photos** after selecting a device to browse saved photos. If an image type cannot be previewed inside the app, use **Open Photo** from the preview window.
+
+Use **Edit Device** for device title edits, marking a device not fixable, or deleting the selected device.
 
 Supported logo filenames include `Logo.jpeg`, `Logo.jpg`, and `Logo.png`.
 

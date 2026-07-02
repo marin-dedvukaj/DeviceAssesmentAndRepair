@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import html
 import json
 import shutil
@@ -72,6 +73,7 @@ CHECKLIST_START_BY_STATUS = {
     "dismantled": "assembly",
     "fixed": "Final test",
 }
+STATUS_FILTER_OPTIONS = ["All", *EDITABLE_DEVICE_STATUSES]
 
 
 def resolve_config_path(config_path: Path) -> Path:
@@ -131,8 +133,8 @@ class DeviceChecklistApp(tk.Tk):
     ):
         super().__init__()
         self.title("Device Checklist Logger")
-        self.geometry("1260x720")
-        self.minsize(980, 560)
+        self.geometry("1440x820")
+        self.minsize(1180, 620)
 
         self.backend = DeviceChecklistBackend(storage_location)
         self.photos_location = Path(photos_location)
@@ -144,8 +146,13 @@ class DeviceChecklistApp(tk.Tk):
         self.selected_file_name: str | None = None
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_args: self.refresh_table())
+        self.status_filter_var = tk.StringVar(value="All")
+        self.status_filter_var.trace_add("write", lambda *_args: self.refresh_table())
         self.sort_column = "id"
         self.sort_reverse = False
+        self.counter_labels: dict[str, tk.Label] = {}
+        self.filter_buttons: dict[str, tk.Button] = {}
+        self.visible_device_rows: list[dict[str, str]] = []
 
         self._configure_style()
         self._build_layout()
@@ -156,7 +163,7 @@ class DeviceChecklistApp(tk.Tk):
 
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("Treeview", rowheight=32, font=("Segoe UI", 10), borderwidth=1)
+        style.configure("Treeview", rowheight=28, font=("Segoe UI", 10), borderwidth=1)
         style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"), relief="raised")
         style.map("Treeview", background=[("selected", "#25466f")])
 
@@ -176,7 +183,7 @@ class DeviceChecklistApp(tk.Tk):
         main = tk.Frame(self, bg="#f2f2f2")
         main.pack(fill="both", expand=True, padx=10, pady=10)
 
-        sidebar = tk.Frame(main, bg="#ffffff", bd=2, relief="groove", width=285)
+        sidebar = tk.Frame(main, bg="#ffffff", bd=2, relief="groove", width=250)
         sidebar.pack(side="left", fill="y", padx=(0, 12))
         sidebar.pack_propagate(False)
 
@@ -204,20 +211,16 @@ class DeviceChecklistApp(tk.Tk):
             bd=1,
             relief="solid",
             padx=8,
-            height=2,
+            height=1,
         )
-        self.selected_label.pack(fill="x", padx=14, pady=(0, 22))
+        self.selected_label.pack(fill="x", padx=12, pady=(0, 16))
 
         self._button(parent, "New Device", self.new_device, primary=True)
         self._button(parent, "Edit Device", self.edit_device, primary=True)
         self._button(parent, "Enter Form", self.enter_form, primary=True, tall=True)
+        self._button(parent, "Reports", self.print_report)
 
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=14, pady=22)
-
-        self._button(parent, "Refresh Table", self.refresh_table)
-        self._button(parent, "Print report", self.print_report)
-        self._button(parent, "Delete Device", self.delete_device)
-        self._button(parent, "Mark Not Fixable", self.mark_not_fixable)
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=12, pady=16)
 
     def _button(
         self,
@@ -240,11 +243,14 @@ class DeviceChecklistApp(tk.Tk):
             bd=2,
             relief="ridge",
             font=("Segoe UI", 10, "bold" if tall else "normal"),
-            height=3 if tall else 2,
+            height=2 if tall else 1,
         )
-        button.pack(fill="x", padx=14, pady=7)
+        button.pack(fill="x", padx=12, pady=5)
 
     def _build_table(self, parent: tk.Frame) -> None:
+        self._build_dashboard(parent)
+        self._build_status_filters(parent)
+
         search_bar = tk.Frame(parent, bg="#ffffff")
         search_bar.pack(fill="x", padx=10, pady=(10, 0))
 
@@ -256,9 +262,22 @@ class DeviceChecklistApp(tk.Tk):
             font=("Segoe UI", 10, "bold"),
         ).pack(side="left", padx=(0, 8))
         tk.Entry(search_bar, textvariable=self.search_var, font=("Segoe UI", 10)).pack(side="left", fill="x", expand=True)
+        tk.Button(
+            search_bar,
+            text="↻",
+            command=self.refresh_table,
+            width=3,
+            height=1,
+            bg="#ffffff",
+            fg="#222222",
+            activebackground="#e8e8e8",
+        ).pack(side="left", padx=(8, 0))
 
-        columns = ("id", "sn", "date", "status", "comment", "file")
-        self.table = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse")
+        table_area = tk.Frame(parent, bg="#ffffff")
+        table_area.pack(fill="both", expand=True, padx=10, pady=10)
+
+        columns = ("id", "sn", "date", "status", "comment", "updated", "file")
+        self.table = ttk.Treeview(table_area, columns=columns, show="headings", selectmode="browse")
 
         headings = {
             "id": "ID",
@@ -266,46 +285,94 @@ class DeviceChecklistApp(tk.Tk):
             "date": "Date",
             "status": "Status",
             "comment": "Comment",
+            "updated": "Last Updated",
             "file": "CSV File",
         }
-        widths = {"id": 70, "sn": 210, "date": 145, "status": 130, "comment": 230, "file": 320}
+        widths = {"id": 50, "sn": 155, "date": 110, "status": 105, "comment": 170, "updated": 135, "file": 235}
 
         for column in columns:
             self.table.heading(column, text=headings[column], command=lambda selected=column: self._sort_by(selected))
-            self.table.column(column, width=widths[column], minwidth=70, anchor="center")
+            self.table.column(column, width=widths[column], minwidth=50, anchor="center")
 
         for status, color in DEVICE_STATUSES.items():
             self.table.tag_configure(status, background=color)
 
-        y_scroll = ttk.Scrollbar(parent, orient="vertical", command=self.table.yview)
-        self.table.configure(yscrollcommand=y_scroll.set)
+        y_scroll = ttk.Scrollbar(table_area, orient="vertical", command=self.table.yview)
+        x_scroll = ttk.Scrollbar(table_area, orient="horizontal", command=self.table.xview)
+        self.table.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
 
-        self.table.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
-        y_scroll.pack(side="right", fill="y", padx=(0, 10), pady=10)
+        self.table.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        table_area.grid_rowconfigure(0, weight=1)
+        table_area.grid_columnconfigure(0, weight=1)
         self.table.bind("<<TreeviewSelect>>", self._on_select)
         self.table.bind("<Double-1>", lambda _event: self.enter_form())
+
+    def _build_dashboard(self, parent: tk.Frame) -> None:
+        dashboard = tk.Frame(parent, bg="#ffffff")
+        dashboard.pack(fill="x", padx=10, pady=(10, 0))
+
+        for status in STATUS_FILTER_OPTIONS:
+            tile = tk.Frame(dashboard, bg="#f7f7f7", bd=1, relief="solid")
+            tile.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            tk.Label(
+                tile,
+                text=status,
+                bg="#f7f7f7",
+                fg="#333333",
+                font=("Segoe UI", 9, "bold"),
+            ).pack(anchor="w", padx=8, pady=(5, 0))
+            value = tk.Label(
+                tile,
+                text="0",
+                bg="#f7f7f7",
+                fg="#222222",
+                font=("Segoe UI", 14, "bold"),
+            )
+            value.pack(anchor="w", padx=8, pady=(0, 5))
+            self.counter_labels[status] = value
+
+    def _build_status_filters(self, parent: tk.Frame) -> None:
+        filters = tk.Frame(parent, bg="#ffffff")
+        filters.pack(fill="x", padx=10, pady=(10, 0))
+
+        tk.Label(
+            filters,
+            text="Status",
+            bg="#ffffff",
+            fg="#222222",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=(0, 8))
+
+        for status in STATUS_FILTER_OPTIONS:
+            button = tk.Button(
+                filters,
+                text=status,
+                command=lambda selected=status: self.status_filter_var.set(selected),
+                height=1,
+                padx=10,
+            )
+            button.pack(side="left", padx=(0, 5))
+            self.filter_buttons[status] = button
 
     def refresh_table(self) -> None:
         for row_id in self.table.get_children():
             self.table.delete(row_id)
 
+        all_rows = self._device_table_rows()
+        self._update_dashboard(all_rows)
+        self._update_filter_buttons()
+
         device_rows = []
         search_text = self.search_var.get().strip().lower()
+        status_filter = self.status_filter_var.get()
 
-        for path in self.backend.list_devices():
-            try:
-                sn, device_date, status, comment = self.backend._parse_device_file_name(path.name)
-            except ValueError:
+        for row in all_rows:
+            if status_filter != "All" and row["status"] != status_filter:
                 continue
-
-            row = {
-                "sn": sn,
-                "date": device_date,
-                "status": status,
-                "comment": comment,
-                "file": path.name,
-            }
-            if search_text and search_text not in " ".join(row.values()).lower():
+            searchable = " ".join(row[column] for column in ("sn", "date", "status", "comment", "updated", "file"))
+            if search_text and search_text not in searchable.lower():
                 continue
             device_rows.append(row)
 
@@ -313,14 +380,28 @@ class DeviceChecklistApp(tk.Tk):
             if self.sort_reverse:
                 device_rows.reverse()
         else:
-            device_rows.sort(key=lambda row: row[self.sort_column].lower(), reverse=self.sort_reverse)
+            device_rows.sort(
+                key=lambda row: row["updated_ts"] if self.sort_column == "updated" else row[self.sort_column].lower(),
+                reverse=self.sort_reverse,
+            )
 
+        self.visible_device_rows = []
         for index, row in enumerate(device_rows, start=1):
+            visible_row = {**row, "id": str(index)}
+            self.visible_device_rows.append(visible_row)
             self.table.insert(
                 "",
                 "end",
                 iid=row["file"],
-                values=(index, row["sn"], row["date"], row["status"], row["comment"], row["file"]),
+                values=(
+                    index,
+                    row["sn"],
+                    row["date"],
+                    row["status"],
+                    row["comment"],
+                    row["updated"],
+                    row["file"],
+                ),
                 tags=(row["status"],),
             )
 
@@ -340,6 +421,41 @@ class DeviceChecklistApp(tk.Tk):
             self._select_device(path.name)
         except Exception as exc:
             messagebox.showerror("New Device", str(exc), parent=self)
+
+    def export_visible_devices(self) -> None:
+        if not self.visible_device_rows:
+            messagebox.showinfo("Export Table CSV", "No visible devices to export.", parent=self)
+            return
+
+        output = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export device table",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not output:
+            return
+
+        headers = ["ID", "Serial Number", "Date", "Status", "Comment", "Last Updated", "CSV File"]
+        try:
+            with Path(output).open("w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(headers)
+                for row in self.visible_device_rows:
+                    writer.writerow(
+                        [
+                            row["id"],
+                            row["sn"],
+                            row["date"],
+                            row["status"],
+                            row["comment"],
+                            row["updated"],
+                            row["file"],
+                        ]
+                    )
+            messagebox.showinfo("Export Table CSV", f"Exported:\n{output}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export Table CSV", str(exc), parent=self)
 
     def edit_device(self) -> None:
         if not self.selected_file_name:
@@ -371,6 +487,18 @@ class DeviceChecklistApp(tk.Tk):
 
     def mark_not_fixable(self) -> None:
         self._change_selected_status("notFixable")
+
+    def preview_photos(self) -> None:
+        if not self.selected_file_name:
+            messagebox.showinfo("Preview Photos", "Select a device first.", parent=self)
+            return
+
+        image_paths = self._device_photo_paths(self.selected_file_name)
+        if not image_paths:
+            messagebox.showinfo("Preview Photos", "No photos found for this device.", parent=self)
+            return
+
+        PhotoPreviewWindow(self, image_paths)
 
     def print_report(self) -> None:
         ReportMenu(self)
@@ -448,6 +576,47 @@ class DeviceChecklistApp(tk.Tk):
             self.sort_reverse = False
         self.refresh_table()
 
+    def _device_table_rows(self) -> list[dict[str, str]]:
+        rows = []
+        for path in self.backend.list_devices():
+            try:
+                sn, device_date, status, comment = self.backend._parse_device_file_name(path.name)
+            except ValueError:
+                continue
+
+            normalized_status = normalize_device_status(status)
+            updated_ts = path.stat().st_mtime
+            rows.append(
+                {
+                    "sn": sn,
+                    "date": device_date,
+                    "status": normalized_status,
+                    "comment": comment,
+                    "updated": datetime.fromtimestamp(updated_ts).strftime("%Y-%m-%d %H:%M"),
+                    "updated_ts": updated_ts,
+                    "file": path.name,
+                }
+            )
+        return rows
+
+    def _update_dashboard(self, rows: list[dict[str, str]]) -> None:
+        counts = {status: 0 for status in STATUS_FILTER_OPTIONS}
+        counts["All"] = len(rows)
+        for row in rows:
+            if row["status"] in counts:
+                counts[row["status"]] += 1
+
+        for status, label in self.counter_labels.items():
+            label.config(text=str(counts.get(status, 0)))
+
+    def _update_filter_buttons(self) -> None:
+        selected = self.status_filter_var.get()
+        for status, button in self.filter_buttons.items():
+            if status == selected:
+                button.config(bg="#23456f", fg="#ffffff", activebackground="#315985", activeforeground="#ffffff")
+            else:
+                button.config(bg="#ffffff", fg="#222222", activebackground="#e8e8e8", activeforeground="#222222")
+
     def _select_device(self, file_name: str) -> None:
         if self.table.exists(file_name):
             self.table.selection_set(file_name)
@@ -483,7 +652,7 @@ class DeviceChecklistApp(tk.Tk):
         ]
 
         unchecked_rows = [row for row in rows if row["Status"] != "check"]
-        story.append(Paragraph("Unchecked Items", heading_style))
+        story.append(Paragraph("Problems Found", heading_style))
         if unchecked_rows:
             story.append(self._rows_table(unchecked_rows, include_status=True))
         else:
@@ -528,19 +697,16 @@ class DeviceChecklistApp(tk.Tk):
         normal_style = styles["BodyText"]
 
         device_rows = []
-        for index, path in enumerate(self.backend.list_devices(), start=1):
-            try:
-                sn, device_date, status, comment = self.backend._parse_device_file_name(path.name)
-            except ValueError:
-                continue
+        for index, row in enumerate(self._device_table_rows(), start=1):
             device_rows.append(
                 {
                     "ID": str(index),
-                    "Serial Number": sn,
-                    "Date": device_date,
-                    "Status": normalize_device_status(status),
-                    "Comment": comment,
-                    "CSV File": path.name,
+                    "Serial Number": row["sn"],
+                    "Date": row["date"],
+                    "Status": row["status"],
+                    "Comment": row["comment"],
+                    "Last Updated": row["updated"],
+                    "CSV File": row["file"],
                 }
             )
 
@@ -632,7 +798,7 @@ class DeviceChecklistApp(tk.Tk):
         return table
 
     def _devices_table(self, rows: list[dict[str, str]]) -> Table:
-        headers = ["ID", "Serial Number", "Date", "Status", "Comment", "CSV File"]
+        headers = ["ID", "Serial Number", "Date", "Status", "Comment", "Last Updated", "CSV File"]
         body_style = getSampleStyleSheet()["BodyText"]
         data = [headers]
         for row in rows:
@@ -643,7 +809,10 @@ class DeviceChecklistApp(tk.Tk):
                 ]
             )
 
-        table = Table(data, colWidths=[0.4 * inch, 1.1 * inch, 0.9 * inch, 0.9 * inch, 1.2 * inch, 2.2 * inch])
+        table = Table(
+            data,
+            colWidths=[0.35 * inch, 0.95 * inch, 0.8 * inch, 0.75 * inch, 1.0 * inch, 1.15 * inch, 1.7 * inch],
+        )
         table.setStyle(
             TableStyle(
                 [
@@ -687,13 +856,114 @@ class DeviceChecklistApp(tk.Tk):
         return sorted(path for path in photo_folder.iterdir() if path.suffix.lower() in image_suffixes)
 
 
+class PhotoPreviewWindow(tk.Toplevel):
+    def __init__(self, parent: DeviceChecklistApp, image_paths: list[Path]):
+        super().__init__(parent)
+        self.image_paths = image_paths
+        self.preview_image: tk.PhotoImage | None = None
+
+        self.title("Photo Preview")
+        self.geometry("840x620")
+        self.minsize(700, 460)
+        self.configure(bg="#ffffff")
+
+        tk.Label(
+            self,
+            text="Device photos",
+            bg="#ffffff",
+            fg="#222222",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", padx=14, pady=(14, 8))
+
+        content = tk.Frame(self, bg="#ffffff")
+        content.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+
+        list_frame = tk.Frame(content, bg="#ffffff")
+        list_frame.pack(side="left", fill="y", padx=(0, 10))
+
+        self.photo_list = tk.Listbox(list_frame, width=34, height=18)
+        self.photo_list.pack(side="left", fill="y")
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.photo_list.yview)
+        scroll.pack(side="right", fill="y")
+        self.photo_list.configure(yscrollcommand=scroll.set)
+
+        preview_panel = tk.Frame(content, bg="#f7f7f7", bd=1, relief="solid")
+        preview_panel.pack(side="left", fill="both", expand=True)
+
+        self.preview_label = tk.Label(
+            preview_panel,
+            text="Select a photo",
+            bg="#f7f7f7",
+            fg="#333333",
+            anchor="center",
+        )
+        self.preview_label.pack(fill="both", expand=True, padx=8, pady=8)
+
+        actions = tk.Frame(self, bg="#ffffff")
+        actions.pack(fill="x", padx=14, pady=(0, 14))
+
+        tk.Button(actions, text="Open Photo", command=self.open_selected_photo, height=1).pack(side="right")
+        tk.Button(actions, text="Close", command=self.destroy, height=1).pack(side="right", padx=(0, 8))
+
+        for path in image_paths:
+            self.photo_list.insert("end", path.name)
+
+        self.photo_list.bind("<<ListboxSelect>>", self._on_select)
+        self.photo_list.bind("<Double-1>", lambda _event: self.open_selected_photo())
+        self.photo_list.selection_set(0)
+        self._show_photo(image_paths[0])
+
+        self.transient(parent)
+        self.grab_set()
+
+    def _selected_path(self) -> Path | None:
+        selected = self.photo_list.curselection()
+        if not selected:
+            return None
+        return self.image_paths[selected[0]]
+
+    def _on_select(self, _event=None) -> None:
+        selected_path = self._selected_path()
+        if selected_path:
+            self._show_photo(selected_path)
+
+    def _show_photo(self, image_path: Path) -> None:
+        try:
+            image = tk.PhotoImage(file=str(image_path))
+        except tk.TclError:
+            self.preview_image = None
+            self.preview_label.config(
+                image="",
+                text=f"{image_path.name}\n\nPreview unavailable for this image type.\nUse Open Photo.",
+            )
+            return
+
+        max_width = max(self.preview_label.winfo_width(), 420)
+        max_height = max(self.preview_label.winfo_height(), 320)
+        scale = max(1, int(max(image.width() / max_width, image.height() / max_height, 1)))
+        if scale > 1:
+            image = image.subsample(scale, scale)
+
+        self.preview_image = image
+        self.preview_label.config(image=self.preview_image, text="")
+
+    def open_selected_photo(self) -> None:
+        selected_path = self._selected_path()
+        if not selected_path:
+            messagebox.showinfo("Photo Preview", "Select a photo first.", parent=self)
+            return
+        opened = webbrowser.open(selected_path.as_uri())
+        if not opened:
+            messagebox.showinfo("Photo Preview", f"Photo path:\n{selected_path}", parent=self)
+
+
 class ReportMenu(tk.Toplevel):
     def __init__(self, parent: DeviceChecklistApp):
         super().__init__(parent)
         self.parent = parent
 
         self.title("Reports")
-        self.geometry("340x220")
+        self.geometry("360x275")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
 
@@ -713,8 +983,8 @@ class ReportMenu(tk.Toplevel):
             fg="#ffffff",
             activebackground="#315985",
             activeforeground="#ffffff",
-            height=2,
-        ).pack(fill="x", padx=18, pady=7)
+            height=1,
+        ).pack(fill="x", padx=18, pady=5)
 
         tk.Button(
             self,
@@ -723,10 +993,30 @@ class ReportMenu(tk.Toplevel):
             bg="#ffffff",
             fg="#222222",
             activebackground="#e8e8e8",
-            height=2,
-        ).pack(fill="x", padx=18, pady=7)
+            height=1,
+        ).pack(fill="x", padx=18, pady=5)
 
-        tk.Button(self, text="Cancel", command=self.destroy, height=2).pack(fill="x", padx=18, pady=(14, 0))
+        tk.Button(
+            self,
+            text="Export visible table CSV",
+            command=self._run_export_table,
+            bg="#ffffff",
+            fg="#222222",
+            activebackground="#e8e8e8",
+            height=1,
+        ).pack(fill="x", padx=18, pady=5)
+
+        tk.Button(
+            self,
+            text="Preview selected device photos",
+            command=self._run_preview_photos,
+            bg="#ffffff",
+            fg="#222222",
+            activebackground="#e8e8e8",
+            height=1,
+        ).pack(fill="x", padx=18, pady=5)
+
+        tk.Button(self, text="Cancel", command=self.destroy, height=1).pack(fill="x", padx=18, pady=(10, 0))
 
         self.transient(parent)
         self.grab_set()
@@ -739,15 +1029,24 @@ class ReportMenu(tk.Toplevel):
         self.destroy()
         self.parent.print_all_devices_report()
 
+    def _run_export_table(self) -> None:
+        self.destroy()
+        self.parent.export_visible_devices()
+
+    def _run_preview_photos(self) -> None:
+        self.destroy()
+        self.parent.preview_photos()
+
 
 class DeviceTitleEditor(tk.Toplevel):
     def __init__(self, parent: DeviceChecklistApp, backend: DeviceChecklistBackend, file_name: str):
         super().__init__(parent)
+        self.parent_app = parent
         self.backend = backend
         self.file_name = file_name
 
         self.title("Edit Device")
-        self.geometry("360x330")
+        self.geometry("400x410")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
 
@@ -778,8 +1077,28 @@ class DeviceTitleEditor(tk.Toplevel):
             command=self.save,
             bg="#23456f",
             fg="#ffffff",
-            height=2,
-        ).pack(fill="x", padx=18, pady=20)
+            height=1,
+        ).pack(fill="x", padx=18, pady=(16, 8))
+
+        tk.Button(
+            self,
+            text="Mark Not Fixable",
+            command=self.mark_not_fixable,
+            bg="#ffffff",
+            fg="#222222",
+            activebackground="#e8e8e8",
+            height=1,
+        ).pack(fill="x", padx=18, pady=4)
+
+        tk.Button(
+            self,
+            text="Delete Device",
+            command=self.delete_device,
+            bg="#ffffff",
+            fg="#222222",
+            activebackground="#e8e8e8",
+            height=1,
+        ).pack(fill="x", padx=18, pady=4)
 
         self.transient(parent)
         self.grab_set()
@@ -792,16 +1111,46 @@ class DeviceTitleEditor(tk.Toplevel):
 
     def save(self) -> None:
         try:
-            self.backend.ChangeTitle(
-                self.file_name,
-                sn=self.sn_var.get().strip(),
-                device_date=self.date_var.get().strip(),
-                status=self.status_var.get().strip(),
-                comment=self.comment_var.get().strip(),
-            )
+            self._save_title(self.status_var.get().strip())
             self.destroy()
         except Exception as exc:
             messagebox.showerror("Edit Device", str(exc), parent=self)
+
+    def mark_not_fixable(self) -> None:
+        try:
+            new_path = self._save_title("notFixable")
+            self.file_name = new_path.name
+            self.status_var.set("notFixable")
+            self.parent_app.refresh_table()
+            self.parent_app._select_device(self.file_name)
+            messagebox.showinfo("Edit Device", "Device marked not fixable.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Edit Device", str(exc), parent=self)
+
+    def delete_device(self) -> None:
+        confirmed = messagebox.askyesno(
+            "Delete Device",
+            f"Delete {self.file_name}?",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        try:
+            self.backend.delete_device(self.file_name)
+            self.parent_app.refresh_table()
+            self.destroy()
+        except Exception as exc:
+            messagebox.showerror("Delete Device", str(exc), parent=self)
+
+    def _save_title(self, status: str) -> Path:
+        return self.backend.ChangeTitle(
+            self.file_name,
+            sn=self.sn_var.get().strip(),
+            device_date=self.date_var.get().strip(),
+            status=status,
+            comment=self.comment_var.get().strip(),
+        )
 
 
 class ChecklistWindow(tk.Toplevel):
@@ -830,8 +1179,8 @@ class ChecklistWindow(tk.Toplevel):
         self.checklist_entry_font = ("Segoe UI", 12)
 
         self.title("Device Checklist")
-        self.geometry("900x620")
-        self.minsize(760, 500)
+        self.geometry("1120x720")
+        self.minsize(980, 580)
         self.configure(bg="#f2f2f2")
 
         self.header = tk.Label(
@@ -868,18 +1217,18 @@ class ChecklistWindow(tk.Toplevel):
         actions = tk.Frame(self, bg="#f2f2f2")
         actions.pack(fill="x", padx=14, pady=(0, 14))
 
-        tk.Button(actions, text="Back", command=self.previous_category, width=16).pack(side="left")
-        tk.Button(actions, text="Save", command=self.save_current, width=16).pack(side="left", padx=8)
-        tk.Button(actions, text="Take Picture", command=self.take_picture, width=16).pack(side="left")
-        tk.Button(actions, text="Reset Checks", command=self.reset_current_checks, width=16).pack(side="left", padx=8)
+        tk.Button(actions, text="Back", command=self.previous_category, width=12, height=1).pack(side="left")
+        tk.Button(actions, text="Save", command=self.save_current, width=12, height=1).pack(side="left", padx=6)
+        tk.Button(actions, text="Take Picture", command=self.take_picture, width=14, height=1).pack(side="left")
+        tk.Button(actions, text="Reset Checks", command=self.reset_current_checks, width=14, height=1).pack(side="left", padx=6)
         tk.Button(
             actions,
             text="Complete And Continue",
             command=self.complete_current_category,
             bg="#23456f",
             fg="#ffffff",
-            width=24,
-            height=2,
+            width=22,
+            height=1,
         ).pack(side="right")
 
         self.render_category()
@@ -891,7 +1240,7 @@ class ChecklistWindow(tk.Toplevel):
         self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
 
     def _resize_scroll_content(self, event) -> None:
-        content_width = min(max(event.width - 36, 720), 1060)
+        content_width = min(max(event.width - 36, 760), 1240)
         self.content_canvas.coords(self.content_window, event.width / 2, 0)
         self.content_canvas.itemconfigure(self.content_window, width=content_width)
 
@@ -1185,8 +1534,8 @@ class CameraCaptureWindow(tk.Toplevel):
         self.after_id: str | None = None
 
         self.title("Take Picture")
-        self.geometry("820x620")
-        self.minsize(640, 480)
+        self.geometry("900x680")
+        self.minsize(700, 520)
         self.configure(bg="#f2f2f2")
 
         try:
@@ -1208,9 +1557,9 @@ class CameraCaptureWindow(tk.Toplevel):
             bg="#23456f",
             fg="#ffffff",
             width=18,
-            height=2,
+            height=1,
         ).pack(side="right")
-        tk.Button(actions, text="Cancel", command=self.close, width=14, height=2).pack(side="right", padx=(0, 8))
+        tk.Button(actions, text="Cancel", command=self.close, width=14, height=1).pack(side="right", padx=(0, 8))
 
         self.bind("<Return>", lambda _event: self.save_photo())
         self.bind("<space>", lambda _event: self.save_photo())

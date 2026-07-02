@@ -87,6 +87,7 @@ class DeviceChecklistBackend:
             raise FileExistsError(f"Target CSV already exists: {new_path}")
 
         current_path.rename(new_path)
+        new_path.touch()
         return new_path
 
     def add_item(
