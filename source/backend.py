@@ -14,6 +14,7 @@ class DeviceChecklistBackend:
 
     File names use this title format:
         SN_date_status.csv
+        SN_date_status_comment.csv
 
     CSV rows use this header:
         Category,Item,Status,Comment
@@ -27,7 +28,13 @@ class DeviceChecklistBackend:
         self.storage_location.mkdir(parents=True, exist_ok=True)
         self.template_csv = Path(template_csv) if template_csv else None
 
-    def AddNewDevice(self, sn: str, status: str, device_date: str | None = None) -> Path:
+    def AddNewDevice(
+        self,
+        sn: str,
+        status: str,
+        device_date: str | None = None,
+        comment: str = "",
+    ) -> Path:
         """
         Create a new device CSV in the storage location.
 
@@ -38,7 +45,7 @@ class DeviceChecklistBackend:
         self._require_value(status, "status")
 
         device_date = device_date or date.today().isoformat()
-        file_path = self.storage_location / self._build_file_name(sn, device_date, status)
+        file_path = self.storage_location / self._build_file_name(sn, device_date, status, comment)
 
         if file_path.exists():
             raise FileExistsError(f"Device CSV already exists: {file_path}")
@@ -59,20 +66,22 @@ class DeviceChecklistBackend:
         sn: str | None = None,
         device_date: str | None = None,
         status: str | None = None,
+        comment: str | None = None,
     ) -> Path:
         """
-        Rename a CSV using SN_date_status.csv.
+        Rename a CSV using SN_date_status.csv or SN_date_status_comment.csv.
 
         Empty or None values keep the existing value unchanged.
         csv_name_or_sn can be a full CSV filename, a path, or just the current SN.
         """
         current_path = self._find_device_file(csv_name_or_sn)
-        current_sn, current_date, current_status = self._parse_file_name(current_path.name)
+        current_sn, current_date, current_status, current_comment = self._parse_device_file_name(current_path.name)
 
         new_sn = sn or current_sn
         new_date = device_date or current_date
         new_status = status or current_status
-        new_path = current_path.with_name(self._build_file_name(new_sn, new_date, new_status))
+        new_comment = current_comment if comment is None else comment.strip()
+        new_path = current_path.with_name(self._build_file_name(new_sn, new_date, new_status, new_comment))
 
         if new_path != current_path and new_path.exists():
             raise FileExistsError(f"Target CSV already exists: {new_path}")
@@ -214,7 +223,7 @@ class DeviceChecklistBackend:
         matches = [
             path
             for path in self.storage_location.glob("*.csv")
-            if self._parse_file_name(path.name)[0] == csv_name_or_sn
+            if self._parse_device_file_name(path.name)[0] == csv_name_or_sn
         ]
 
         if not matches:
@@ -245,16 +254,23 @@ class DeviceChecklistBackend:
             writer.writeheader()
             writer.writerows(rows)
 
-    def _build_file_name(self, sn: str, device_date: str, status: str) -> str:
+    def _build_file_name(self, sn: str, device_date: str, status: str, comment: str = "") -> str:
         parts = [self._safe_title_part(sn), self._safe_title_part(device_date), self._safe_title_part(status)]
+        if comment.strip():
+            parts.append(self._safe_title_part(comment))
         return "_".join(parts) + ".csv"
 
     def _parse_file_name(self, file_name: str) -> tuple[str, str, str]:
+        sn, device_date, status, _comment = self._parse_device_file_name(file_name)
+        return sn, device_date, status
+
+    def _parse_device_file_name(self, file_name: str) -> tuple[str, str, str, str]:
         stem = Path(file_name).stem
-        parts = stem.split("_", 2)
-        if len(parts) != 3:
-            raise ValueError("CSV name must use SN_date_status.csv format")
-        return parts[0], parts[1], parts[2]
+        parts = stem.split("_", 3)
+        if len(parts) not in {3, 4}:
+            raise ValueError("CSV name must use SN_date_status.csv or SN_date_status_comment.csv format")
+        comment = parts[3] if len(parts) == 4 else ""
+        return parts[0], parts[1], parts[2], comment
 
     def _find_row_index(
         self,

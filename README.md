@@ -7,13 +7,15 @@ The application stores each device as a CSV file, tracks checklist status by rep
 ## Features
 
 - Create, edit, and delete device records.
+- Add a device comment to make records easier to identify.
+- Search and sort the device table.
 - Track device status: `received`, `tested`, `dismantled`, `notFixable`, and `fixed`.
 - Load checklist sections from `source/checklist_config.json`.
 - Checklist boxes are unchecked by default.
 - Add comments for each checklist item.
 - Capture a photo from a connected camera when OpenCV is installed.
 - Attach an existing image when camera capture is unavailable.
-- Generate PDF reports and open them in the browser or system PDF viewer.
+- Generate selected-device and all-devices PDF reports, then open them in the browser or system PDF viewer.
 - Store device CSV files and photos under the `data` folder.
 
 ## Requirements
@@ -104,6 +106,12 @@ The filename format is:
 SerialNumber_Date_Status.csv
 ```
 
+When a device comment is added, the filename format is:
+
+```text
+SerialNumber_Date_Status_Comment.csv
+```
+
 Photos are saved in:
 
 ```text
@@ -114,13 +122,18 @@ PDF reports are generated in the system temporary folder and opened automaticall
 
 ## PDF Reports
 
-Use **Print report** after selecting a device. The report opens automatically in the browser or system PDF viewer. Reports include:
+Use **Print report** to choose between a selected-device report and an all-devices table report. Reports open automatically in the browser or system PDF viewer.
+
+Selected-device reports include:
 
 - Device serial number and date.
+- Device comment.
 - Any unchecked checklist items.
 - Final test checklist results.
 - Saved photos for the device.
 - The project logo when a supported logo file is present.
+
+All-devices reports include the device table with serial number, date, status, comment, and CSV filename.
 
 Supported logo filenames include `Logo.jpeg`, `Logo.jpg`, and `Logo.png`.
 

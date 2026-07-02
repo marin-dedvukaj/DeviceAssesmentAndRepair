@@ -136,6 +136,10 @@ class DeviceChecklistApp(tk.Tk):
         self.config_path = resolve_config_path(Path(config_path))
         self.checklists, self.status_after_checklist = load_checklist_config(self.config_path)
         self.selected_file_name: str | None = None
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_args: self.refresh_table())
+        self.sort_column = "id"
+        self.sort_reverse = False
 
         self._configure_style()
         self._build_layout()
@@ -235,7 +239,19 @@ class DeviceChecklistApp(tk.Tk):
         button.pack(fill="x", padx=14, pady=7)
 
     def _build_table(self, parent: tk.Frame) -> None:
-        columns = ("id", "sn", "date", "status", "file")
+        search_bar = tk.Frame(parent, bg="#ffffff")
+        search_bar.pack(fill="x", padx=10, pady=(10, 0))
+
+        tk.Label(
+            search_bar,
+            text="Search",
+            bg="#ffffff",
+            fg="#222222",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=(0, 8))
+        tk.Entry(search_bar, textvariable=self.search_var, font=("Segoe UI", 10)).pack(side="left", fill="x", expand=True)
+
+        columns = ("id", "sn", "date", "status", "comment", "file")
         self.table = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse")
 
         headings = {
@@ -243,12 +259,13 @@ class DeviceChecklistApp(tk.Tk):
             "sn": "SerialNumber",
             "date": "Date",
             "status": "Status",
+            "comment": "Comment",
             "file": "CSV File",
         }
-        widths = {"id": 70, "sn": 260, "date": 180, "status": 150, "file": 360}
+        widths = {"id": 70, "sn": 210, "date": 145, "status": 130, "comment": 230, "file": 320}
 
         for column in columns:
-            self.table.heading(column, text=headings[column])
+            self.table.heading(column, text=headings[column], command=lambda selected=column: self._sort_by(selected))
             self.table.column(column, width=widths[column], minwidth=70, anchor="center")
 
         for status, color in DEVICE_STATUSES.items():
@@ -266,18 +283,39 @@ class DeviceChecklistApp(tk.Tk):
         for row_id in self.table.get_children():
             self.table.delete(row_id)
 
-        for index, path in enumerate(self.backend.list_devices(), start=1):
+        device_rows = []
+        search_text = self.search_var.get().strip().lower()
+
+        for path in self.backend.list_devices():
             try:
-                sn, device_date, status = self.backend._parse_file_name(path.name)
+                sn, device_date, status, comment = self.backend._parse_device_file_name(path.name)
             except ValueError:
                 continue
 
+            row = {
+                "sn": sn,
+                "date": device_date,
+                "status": status,
+                "comment": comment,
+                "file": path.name,
+            }
+            if search_text and search_text not in " ".join(row.values()).lower():
+                continue
+            device_rows.append(row)
+
+        if self.sort_column == "id":
+            if self.sort_reverse:
+                device_rows.reverse()
+        else:
+            device_rows.sort(key=lambda row: row[self.sort_column].lower(), reverse=self.sort_reverse)
+
+        for index, row in enumerate(device_rows, start=1):
             self.table.insert(
                 "",
                 "end",
-                iid=path.name,
-                values=(index, sn, device_date, status, path.name),
-                tags=(status,),
+                iid=row["file"],
+                values=(index, row["sn"], row["date"], row["status"], row["comment"], row["file"]),
+                tags=(row["status"],),
             )
 
         self.selected_file_name = None
@@ -287,9 +325,10 @@ class DeviceChecklistApp(tk.Tk):
         sn = simpledialog.askstring("New Device", "Enter serial number:", parent=self)
         if not sn:
             return
+        comment = simpledialog.askstring("New Device", "Enter device comment:", parent=self) or ""
 
         try:
-            path = self.backend.AddNewDevice(sn=sn.strip(), status="received")
+            path = self.backend.AddNewDevice(sn=sn.strip(), status="received", comment=comment.strip())
             self._ensure_configured_checklist_items(path.name)
             self.refresh_table()
             self._select_device(path.name)
@@ -328,6 +367,9 @@ class DeviceChecklistApp(tk.Tk):
         self._change_selected_status("notFixable")
 
     def print_report(self) -> None:
+        ReportMenu(self)
+
+    def print_device_report(self) -> None:
         if not self.selected_file_name:
             messagebox.showinfo("Print Report", "Select a device first.", parent=self)
             return
@@ -340,6 +382,15 @@ class DeviceChecklistApp(tk.Tk):
                 messagebox.showinfo("Print Report", f"Report created:\n{report_path}", parent=self)
         except Exception as exc:
             messagebox.showerror("Print Report", str(exc), parent=self)
+
+    def print_all_devices_report(self) -> None:
+        try:
+            report_path = self._build_all_devices_report()
+            opened = webbrowser.open(report_path.as_uri())
+            if not opened:
+                messagebox.showinfo("All Devices Report", f"Report created:\n{report_path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("All Devices Report", str(exc), parent=self)
 
     def enter_form(self) -> None:
         if not self.selected_file_name:
@@ -383,6 +434,14 @@ class DeviceChecklistApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Status", str(exc), parent=self)
 
+    def _sort_by(self, column: str) -> None:
+        if self.sort_column == column:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_column = column
+            self.sort_reverse = False
+        self.refresh_table()
+
     def _select_device(self, file_name: str) -> None:
         if self.table.exists(file_name):
             self.table.selection_set(file_name)
@@ -399,7 +458,7 @@ class DeviceChecklistApp(tk.Tk):
         self.selected_label.config(text=self.selected_file_name)
 
     def _build_device_report(self, file_name: str) -> Path:
-        sn, device_date, _status = self.backend._parse_file_name(file_name)
+        sn, device_date, _status, comment = self.backend._parse_device_file_name(file_name)
         rows = self.backend.list_items(file_name)
         report_path = self._report_path(file_name, sn, device_date)
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -413,6 +472,7 @@ class DeviceChecklistApp(tk.Tk):
             Paragraph("Device Report", title_style),
             Paragraph(f"Serial Number: {sn}", normal_style),
             Paragraph(f"Date: {device_date}", normal_style),
+            Paragraph(f"Comment: {comment or '-'}", normal_style),
             Spacer(1, 0.2 * inch),
         ]
 
@@ -447,6 +507,53 @@ class DeviceChecklistApp(tk.Tk):
             pagesize=A4,
             rightMargin=0.5 * inch,
             leftMargin=0.5 * inch,
+            topMargin=0.9 * inch,
+            bottomMargin=0.5 * inch,
+        )
+        document.build(story, onFirstPage=self._draw_report_header, onLaterPages=self._draw_report_header)
+        return report_path
+
+    def _build_all_devices_report(self) -> Path:
+        report_path = self._all_devices_report_path()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        styles = getSampleStyleSheet()
+        title_style = styles["Title"]
+        normal_style = styles["BodyText"]
+
+        device_rows = []
+        for index, path in enumerate(self.backend.list_devices(), start=1):
+            try:
+                sn, device_date, status, comment = self.backend._parse_device_file_name(path.name)
+            except ValueError:
+                continue
+            device_rows.append(
+                {
+                    "ID": str(index),
+                    "Serial Number": sn,
+                    "Date": device_date,
+                    "Status": normalize_device_status(status),
+                    "Comment": comment,
+                    "CSV File": path.name,
+                }
+            )
+
+        story = [
+            Paragraph("All Devices Report", title_style),
+            Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", normal_style),
+            Spacer(1, 0.2 * inch),
+        ]
+
+        if device_rows:
+            story.append(self._devices_table(device_rows))
+        else:
+            story.append(Paragraph("No devices found.", normal_style))
+
+        document = SimpleDocTemplate(
+            str(report_path),
+            pagesize=A4,
+            rightMargin=0.45 * inch,
+            leftMargin=0.45 * inch,
             topMargin=0.9 * inch,
             bottomMargin=0.5 * inch,
         )
@@ -518,6 +625,32 @@ class DeviceChecklistApp(tk.Tk):
         )
         return table
 
+    def _devices_table(self, rows: list[dict[str, str]]) -> Table:
+        headers = ["ID", "Serial Number", "Date", "Status", "Comment", "CSV File"]
+        body_style = getSampleStyleSheet()["BodyText"]
+        data = [headers]
+        for row in rows:
+            data.append(
+                [
+                    Paragraph(html.escape(str(row[header])).replace("\n", "<br/>"), body_style)
+                    for header in headers
+                ]
+            )
+
+        table = Table(data, colWidths=[0.4 * inch, 1.1 * inch, 0.9 * inch, 0.9 * inch, 1.2 * inch, 2.2 * inch])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8e8")),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#bbbbbb")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
+                ]
+            )
+        )
+        return table
+
     def _report_image(self, image_path: Path) -> Image:
         max_width = 7.0 * inch
         max_height = 8.5 * inch
@@ -535,12 +668,70 @@ class DeviceChecklistApp(tk.Tk):
         report_folder = Path(tempfile.gettempdir()) / "DeviceChecklistReports" / device_stem
         return report_folder / f"{safe_name}.pdf"
 
+    def _all_devices_report_path(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        report_folder = Path(tempfile.gettempdir()) / "DeviceChecklistReports"
+        return report_folder / f"all-devices-{timestamp}.pdf"
+
     def _device_photo_paths(self, file_name: str) -> list[Path]:
         photo_folder = self.photos_location / Path(file_name).stem
         if not photo_folder.exists():
             return []
         image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
         return sorted(path for path in photo_folder.iterdir() if path.suffix.lower() in image_suffixes)
+
+
+class ReportMenu(tk.Toplevel):
+    def __init__(self, parent: DeviceChecklistApp):
+        super().__init__(parent)
+        self.parent = parent
+
+        self.title("Reports")
+        self.geometry("340x220")
+        self.resizable(False, False)
+        self.configure(bg="#ffffff")
+
+        tk.Label(
+            self,
+            text="Choose report",
+            bg="#ffffff",
+            fg="#222222",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", padx=18, pady=(18, 10))
+
+        tk.Button(
+            self,
+            text="Selected device report",
+            command=self._run_device_report,
+            bg="#23456f",
+            fg="#ffffff",
+            activebackground="#315985",
+            activeforeground="#ffffff",
+            height=2,
+        ).pack(fill="x", padx=18, pady=7)
+
+        tk.Button(
+            self,
+            text="All devices table",
+            command=self._run_all_devices_report,
+            bg="#ffffff",
+            fg="#222222",
+            activebackground="#e8e8e8",
+            height=2,
+        ).pack(fill="x", padx=18, pady=7)
+
+        tk.Button(self, text="Cancel", command=self.destroy, height=2).pack(fill="x", padx=18, pady=(14, 0))
+
+        self.transient(parent)
+        self.grab_set()
+
+    def _run_device_report(self) -> None:
+        self.destroy()
+        self.parent.print_device_report()
+
+    def _run_all_devices_report(self) -> None:
+        self.destroy()
+        self.parent.print_all_devices_report()
 
 
 class DeviceTitleEditor(tk.Toplevel):
@@ -550,17 +741,19 @@ class DeviceTitleEditor(tk.Toplevel):
         self.file_name = file_name
 
         self.title("Edit Device")
-        self.geometry("360x270")
+        self.geometry("360x330")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
 
-        sn, device_date, status = backend._parse_file_name(file_name)
+        sn, device_date, status, comment = backend._parse_device_file_name(file_name)
         self.sn_var = tk.StringVar(value=sn)
         self.date_var = tk.StringVar(value=device_date)
         self.status_var = tk.StringVar(value=normalize_device_status(status))
+        self.comment_var = tk.StringVar(value=comment)
 
         self._field("Serial number", self.sn_var)
         self._field("Date", self.date_var)
+        self._field("Comment", self.comment_var)
 
         tk.Label(self, text="Status", bg="#ffffff", font=("Segoe UI", 10, "bold")).pack(
             anchor="w", padx=18, pady=(10, 4)
@@ -598,6 +791,7 @@ class DeviceTitleEditor(tk.Toplevel):
                 sn=self.sn_var.get().strip(),
                 device_date=self.date_var.get().strip(),
                 status=self.status_var.get().strip(),
+                comment=self.comment_var.get().strip(),
             )
             self.destroy()
         except Exception as exc:
