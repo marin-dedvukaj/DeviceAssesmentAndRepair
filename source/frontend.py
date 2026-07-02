@@ -66,6 +66,12 @@ STATUS_ALIASES = {
     "recived": "received",
     "dismanteled": "dismantled",
 }
+CHECKLIST_START_BY_STATUS = {
+    "received": "assessment",
+    "tested": "disassembly",
+    "dismantled": "assembly",
+    "fixed": "Final test",
+}
 
 
 def resolve_config_path(config_path: Path) -> Path:
@@ -817,7 +823,7 @@ class ChecklistWindow(tk.Toplevel):
         self.photos_location = Path(photos_location)
         self.on_saved = on_saved
         self.category_names = list(self.checklists)
-        self.category_index = self._first_incomplete_category_index()
+        self.category_index = self._starting_category_index()
         self.row_widgets: list[tuple[str, tk.BooleanVar, tk.StringVar]] = []
         self.checklist_font = ("Segoe UI", 12)
         self.checklist_heading_font = ("Segoe UI", 12, "bold")
@@ -865,6 +871,7 @@ class ChecklistWindow(tk.Toplevel):
         tk.Button(actions, text="Back", command=self.previous_category, width=16).pack(side="left")
         tk.Button(actions, text="Save", command=self.save_current, width=16).pack(side="left", padx=8)
         tk.Button(actions, text="Take Picture", command=self.take_picture, width=16).pack(side="left")
+        tk.Button(actions, text="Reset Checks", command=self.reset_current_checks, width=16).pack(side="left", padx=8)
         tk.Button(
             actions,
             text="Complete And Continue",
@@ -954,6 +961,27 @@ class ChecklistWindow(tk.Toplevel):
         if show_message:
             messagebox.showinfo("Checklist", "Saved.", parent=self)
 
+    def reset_current_checks(self) -> None:
+        category = self.category_names[self.category_index]
+        confirmed = messagebox.askyesno(
+            "Reset Checks",
+            f"Reset check marks for {category}?",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        for item, checked_var, comment_var in self.row_widgets:
+            checked_var.set(False)
+            self.backend.update_item(
+                self.file_name,
+                category,
+                item,
+                status="no check",
+                comment=comment_var.get(),
+            )
+        messagebox.showinfo("Reset Checks", "Current checklist check marks were reset.", parent=self)
+
     def complete_current_category(self) -> None:
         self.save_current(show_message=False)
         category = self.category_names[self.category_index]
@@ -1042,6 +1070,17 @@ class ChecklistWindow(tk.Toplevel):
             return
         self.on_saved(self.file_name)
         self.destroy()
+
+    def _starting_category_index(self) -> int:
+        try:
+            _sn, _device_date, status, _comment = self.backend._parse_device_file_name(self.file_name)
+        except ValueError:
+            return self._first_incomplete_category_index()
+
+        target_category = CHECKLIST_START_BY_STATUS.get(normalize_device_status(status))
+        if target_category in self.category_names:
+            return self.category_names.index(target_category)
+        return self._first_incomplete_category_index()
 
     def _first_incomplete_category_index(self) -> int:
         rows = self.backend.list_items(self.file_name)

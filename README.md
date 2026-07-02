@@ -12,6 +12,8 @@ The application stores each device as a CSV file, tracks checklist status by rep
 - Track device status: `received`, `tested`, `dismantled`, `notFixable`, and `fixed`.
 - Load checklist sections from `source/checklist_config.json`.
 - Checklist boxes are unchecked by default.
+- Checklist forms open on the expected stage from the device status.
+- Reset check marks for the current checklist section only.
 - Add comments for each checklist item.
 - Capture a photo from a connected camera when OpenCV is installed.
 - Attach an existing image when camera capture is unavailable.
@@ -78,6 +80,15 @@ source/checklist_config.json
 ```
 
 The `checklists` object controls the checklist categories and rows. The `status_after_checklist` object controls which device status is applied after each checklist category is completed.
+
+When opening a form, the device status chooses the starting checklist stage:
+
+```text
+received   -> assessment
+tested     -> disassembly
+dismantled -> assembly
+fixed      -> Final test
+```
 
 Example:
 
