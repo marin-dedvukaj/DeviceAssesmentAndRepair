@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import re
 import shutil
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -208,6 +208,29 @@ class DeviceChecklistBackend:
     def list_devices(self) -> list[Path]:
         """Return all device CSV files in the storage location."""
         return sorted(self.storage_location.glob("*.csv"))
+
+    def list_device_summaries(self) -> list[dict[str, str | float]]:
+        """Return parsed device metadata for table and report views."""
+        rows: list[dict[str, str | float]] = []
+        for path in self.list_devices():
+            try:
+                sn, device_date, status, comment = self._parse_device_file_name(path.name)
+            except ValueError:
+                continue
+
+            updated_ts = path.stat().st_mtime
+            rows.append(
+                {
+                    "sn": sn,
+                    "date": device_date,
+                    "status": status,
+                    "comment": comment,
+                    "updated": datetime.fromtimestamp(updated_ts).strftime("%Y-%m-%d %H:%M"),
+                    "updated_ts": updated_ts,
+                    "file": path.name,
+                }
+            )
+        return rows
 
     def _find_device_file(self, csv_name_or_sn: str) -> Path:
         value = Path(csv_name_or_sn)

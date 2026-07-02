@@ -55,7 +55,7 @@ Without OpenCV, **Take Picture** falls back to selecting an existing image file.
 ## Run
 
 ```powershell
-python source\frontend.py
+python source\app.py
 ```
 
 ## Project Structure
@@ -63,8 +63,12 @@ python source\frontend.py
 ```text
 DeviceAssesmentAndRepair/
   source/
+    app.py
     backend.py
+    config.py
     frontend.py
+    photos.py
+    reports.py
     checklist_config.json
   data/
     devices/
@@ -169,10 +173,12 @@ To package the app as a Windows executable:
 
 ```powershell
 python -m pip install pyinstaller
-pyinstaller --onefile --windowed --icon Logo.ico --add-data "source\checklist_config.json;source" --add-data "Logo.jpeg;." source\frontend.py
+pyinstaller --onefile --windowed --icon Logo.ico --add-data "source\checklist_config.json;source" --add-data "Logo.jpeg;." source\app.py
 ```
 
 The built executable will be created in the `dist` folder.
+
+When using auto-py-to-exe, add `Logo.jpeg` as an additional file with destination `.` so it is bundled at the application root. The app also checks the executable folder, so a loose `Logo.jpeg` beside the `.exe` still works as a fallback.
 
 ## Notes
 

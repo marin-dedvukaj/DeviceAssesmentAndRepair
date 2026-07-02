@@ -2,125 +2,27 @@ from __future__ import annotations
 
 import base64
 import csv
-import html
-import json
-import shutil
-import sys
-import tempfile
 import tkinter as tk
 import webbrowser
-from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.lib.utils import ImageReader
-from reportlab.platypus import (
-    Image,
-    PageBreak,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
-
 from backend import DeviceChecklistBackend
-
-
-def app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
-
-
-APP_ROOT = app_root()
-DEFAULT_STORAGE = APP_ROOT / "data" / "devices"
-DEFAULT_PHOTOS = APP_ROOT / "data" / "photos"
-DEFAULT_REPORTS = APP_ROOT / "Reports"
-DEFAULT_CONFIG = Path(__file__).resolve().parent / "checklist_config.json"
-LOGO_CANDIDATES = [
-    APP_ROOT / "logo.spg",
-    APP_ROOT / "Logo.spg",
-    APP_ROOT / "logo.png",
-    APP_ROOT / "Logo.png",
-    APP_ROOT / "logo.jpg",
-    APP_ROOT / "Logo.jpg",
-    APP_ROOT / "logo.jpeg",
-    APP_ROOT / "Logo.jpeg",
-]
-
-DEVICE_STATUSES = {
-    "received": "#ffffff",
-    "recived": "#ffffff",
-    "tested": "#fff2b8",
-    "dismantled": "#ffd7a8",
-    "dismanteled": "#ffd7a8",
-    "notFixable": "#f6b8b8",
-    "fixed": "#cfeecf",
-}
-EDITABLE_DEVICE_STATUSES = ["received", "tested", "dismantled", "notFixable", "fixed"]
-STATUS_ALIASES = {
-    "recived": "received",
-    "dismanteled": "dismantled",
-}
-CHECKLIST_START_BY_STATUS = {
-    "received": "assessment",
-    "tested": "disassembly",
-    "dismantled": "assembly",
-    "fixed": "Final test",
-}
-STATUS_FILTER_OPTIONS = ["All", *EDITABLE_DEVICE_STATUSES]
-
-
-def resolve_config_path(config_path: Path) -> Path:
-    candidates = [
-        config_path,
-        Path.cwd() / "checklist_config.json",
-        Path(__file__).resolve().parent.parent / "checklist_config.json",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return config_path
-
-
-def normalize_device_status(status: str) -> str:
-    return STATUS_ALIASES.get(status, status)
-
-
-def load_checklist_config(config_path: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
-    if not config_path.exists():
-        raise FileNotFoundError(f"Checklist config not found: {config_path}")
-
-    with config_path.open("r", encoding="utf-8") as config_file:
-        config = json.load(config_file)
-
-    checklists = config.get("checklists")
-    status_after_checklist = config.get("status_after_checklist", {})
-
-    if not isinstance(checklists, dict) or not checklists:
-        raise ValueError("checklist_config.json must contain a non-empty 'checklists' object")
-
-    cleaned_checklists: dict[str, list[str]] = {}
-    for category, items in checklists.items():
-        if not isinstance(category, str) or not category.strip():
-            raise ValueError("Checklist category names must be non-empty strings")
-        if not isinstance(items, list) or not all(isinstance(item, str) and item.strip() for item in items):
-            raise ValueError(f"Checklist '{category}' must contain a list of non-empty item names")
-        cleaned_checklists[category.strip()] = [item.strip() for item in items]
-
-    if not isinstance(status_after_checklist, dict):
-        raise ValueError("'status_after_checklist' must be an object")
-
-    cleaned_statuses = {
-        category: normalize_device_status(str(status_after_checklist.get(category, "tested")).strip())
-        for category in cleaned_checklists
-    }
-    return cleaned_checklists, cleaned_statuses
+from config import (
+    CHECKLIST_START_BY_STATUS,
+    DEFAULT_CONFIG,
+    DEFAULT_PHOTOS,
+    DEFAULT_REPORTS,
+    DEFAULT_STORAGE,
+    DEVICE_STATUSES,
+    EDITABLE_DEVICE_STATUSES,
+    STATUS_FILTER_OPTIONS,
+    load_checklist_config,
+    normalize_device_status,
+    resolve_config_path,
+)
+from photos import copy_photo, device_photo_paths, next_photo_path
+from reports import build_all_devices_report, build_device_report
 
 
 class DeviceChecklistApp(tk.Tk):
@@ -493,7 +395,7 @@ class DeviceChecklistApp(tk.Tk):
             messagebox.showinfo("Preview Photos", "Select a device first.", parent=self)
             return
 
-        image_paths = self._device_photo_paths(self.selected_file_name)
+        image_paths = device_photo_paths(self.photos_location, self.selected_file_name)
         if not image_paths:
             messagebox.showinfo("Preview Photos", "No photos found for this device.", parent=self)
             return
@@ -510,7 +412,7 @@ class DeviceChecklistApp(tk.Tk):
 
         try:
             self._ensure_configured_checklist_items(self.selected_file_name)
-            report_path = self._build_device_report(self.selected_file_name)
+            report_path = build_device_report(self.backend, self.selected_file_name, self.photos_location)
             opened = webbrowser.open(report_path.as_uri())
             if not opened:
                 messagebox.showinfo("Print Report", f"Report created:\n{report_path}", parent=self)
@@ -519,7 +421,7 @@ class DeviceChecklistApp(tk.Tk):
 
     def print_all_devices_report(self) -> None:
         try:
-            report_path = self._build_all_devices_report()
+            report_path = build_all_devices_report(self._device_table_rows())
             opened = webbrowser.open(report_path.as_uri())
             if not opened:
                 messagebox.showinfo("All Devices Report", f"Report created:\n{report_path}", parent=self)
@@ -576,25 +478,19 @@ class DeviceChecklistApp(tk.Tk):
             self.sort_reverse = False
         self.refresh_table()
 
-    def _device_table_rows(self) -> list[dict[str, str]]:
+    def _device_table_rows(self) -> list[dict[str, str | float]]:
         rows = []
-        for path in self.backend.list_devices():
-            try:
-                sn, device_date, status, comment = self.backend._parse_device_file_name(path.name)
-            except ValueError:
-                continue
-
-            normalized_status = normalize_device_status(status)
-            updated_ts = path.stat().st_mtime
+        for summary in self.backend.list_device_summaries():
+            normalized_status = normalize_device_status(str(summary["status"]))
             rows.append(
                 {
-                    "sn": sn,
-                    "date": device_date,
+                    "sn": str(summary["sn"]),
+                    "date": str(summary["date"]),
                     "status": normalized_status,
-                    "comment": comment,
-                    "updated": datetime.fromtimestamp(updated_ts).strftime("%Y-%m-%d %H:%M"),
-                    "updated_ts": updated_ts,
-                    "file": path.name,
+                    "comment": str(summary["comment"]),
+                    "updated": str(summary["updated"]),
+                    "updated_ts": summary["updated_ts"],
+                    "file": str(summary["file"]),
                 }
             )
         return rows
@@ -631,230 +527,6 @@ class DeviceChecklistApp(tk.Tk):
             return
         self.selected_file_name = selected[0]
         self.selected_label.config(text=self.selected_file_name)
-
-    def _build_device_report(self, file_name: str) -> Path:
-        sn, device_date, _status, comment = self.backend._parse_device_file_name(file_name)
-        rows = self.backend.list_items(file_name)
-        report_path = self._report_path(file_name, sn, device_date)
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-
-        styles = getSampleStyleSheet()
-        title_style = styles["Title"]
-        heading_style = styles["Heading2"]
-        normal_style = styles["BodyText"]
-
-        story = [
-            Paragraph("Device Report", title_style),
-            Paragraph(f"Serial Number: {sn}", normal_style),
-            Paragraph(f"Date: {device_date}", normal_style),
-            Paragraph(f"Comment: {comment or '-'}", normal_style),
-            Spacer(1, 0.2 * inch),
-        ]
-
-        unchecked_rows = [row for row in rows if row["Status"] != "check"]
-        story.append(Paragraph("Problems Found", heading_style))
-        if unchecked_rows:
-            story.append(self._rows_table(unchecked_rows, include_status=True))
-        else:
-            story.append(Paragraph("All checklist items are checked.", normal_style))
-
-        story.extend([Spacer(1, 0.25 * inch), Paragraph("Final Test Checklist", heading_style)])
-        final_rows = [row for row in rows if row["Category"] == "Final test"]
-        if final_rows:
-            story.append(self._rows_table(final_rows, include_status=True))
-        else:
-            story.append(Paragraph("No final test rows found.", normal_style))
-
-        image_paths = self._device_photo_paths(file_name)
-        story.append(PageBreak())
-        story.append(Paragraph("Images", heading_style))
-        if image_paths:
-            for index, image_path in enumerate(image_paths, start=1):
-                if index > 1:
-                    story.append(Spacer(1, 0.2 * inch))
-                story.append(Paragraph(image_path.name, normal_style))
-                story.append(self._report_image(image_path))
-        else:
-            story.append(Paragraph("No images found for this device.", normal_style))
-
-        document = SimpleDocTemplate(
-            str(report_path),
-            pagesize=A4,
-            rightMargin=0.5 * inch,
-            leftMargin=0.5 * inch,
-            topMargin=0.9 * inch,
-            bottomMargin=0.5 * inch,
-        )
-        document.build(story, onFirstPage=self._draw_report_header, onLaterPages=self._draw_report_header)
-        return report_path
-
-    def _build_all_devices_report(self) -> Path:
-        report_path = self._all_devices_report_path()
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-
-        styles = getSampleStyleSheet()
-        title_style = styles["Title"]
-        normal_style = styles["BodyText"]
-
-        device_rows = []
-        for index, row in enumerate(self._device_table_rows(), start=1):
-            device_rows.append(
-                {
-                    "ID": str(index),
-                    "Serial Number": row["sn"],
-                    "Date": row["date"],
-                    "Status": row["status"],
-                    "Comment": row["comment"],
-                    "Last Updated": row["updated"],
-                    "CSV File": row["file"],
-                }
-            )
-
-        story = [
-            Paragraph("All Devices Report", title_style),
-            Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", normal_style),
-            Spacer(1, 0.2 * inch),
-        ]
-
-        if device_rows:
-            story.append(self._devices_table(device_rows))
-        else:
-            story.append(Paragraph("No devices found.", normal_style))
-
-        document = SimpleDocTemplate(
-            str(report_path),
-            pagesize=A4,
-            rightMargin=0.45 * inch,
-            leftMargin=0.45 * inch,
-            topMargin=0.9 * inch,
-            bottomMargin=0.5 * inch,
-        )
-        document.build(story, onFirstPage=self._draw_report_header, onLaterPages=self._draw_report_header)
-        return report_path
-
-    def _draw_report_header(self, canvas, document) -> None:
-        logo_path = self._logo_path()
-        if not logo_path:
-            return
-
-        try:
-            logo = ImageReader(str(logo_path))
-            image_width, image_height = logo.getSize()
-        except Exception:
-            return
-
-        max_width = 1.35 * inch
-        max_height = 0.55 * inch
-        scale = min(max_width / image_width, max_height / image_height, 1)
-        draw_width = image_width * scale
-        draw_height = image_height * scale
-        x = document.leftMargin
-        y = A4[1] - document.topMargin + 0.18 * inch
-        canvas.drawImage(
-            logo,
-            x,
-            y,
-            width=draw_width,
-            height=draw_height,
-            preserveAspectRatio=True,
-            mask="auto",
-        )
-
-    def _logo_path(self) -> Path | None:
-        for logo_path in LOGO_CANDIDATES:
-            if logo_path.exists():
-                return logo_path
-        return None
-
-    def _rows_table(self, rows: list[dict[str, str]], include_status: bool) -> Table:
-        headers = ["Category", "Item", "Status", "Comment"] if include_status else ["Category", "Item", "Comment"]
-        data = [headers]
-        for row in rows:
-            status = "Checked" if row["Status"] == "check" else "Unchecked"
-            values = [row["Category"], row["Item"], status, row["Comment"]] if include_status else [
-                row["Category"],
-                row["Item"],
-                row["Comment"],
-            ]
-            data.append(
-                [
-                    Paragraph(html.escape(str(value)).replace("\n", "<br/>"), getSampleStyleSheet()["BodyText"])
-                    for value in values
-                ]
-            )
-
-        table = Table(data, colWidths=[1.25 * inch, 2.25 * inch, 0.9 * inch, 2.25 * inch])
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8e8")),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#bbbbbb")),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
-                ]
-            )
-        )
-        return table
-
-    def _devices_table(self, rows: list[dict[str, str]]) -> Table:
-        headers = ["ID", "Serial Number", "Date", "Status", "Comment", "Last Updated", "CSV File"]
-        body_style = getSampleStyleSheet()["BodyText"]
-        data = [headers]
-        for row in rows:
-            data.append(
-                [
-                    Paragraph(html.escape(str(row[header])).replace("\n", "<br/>"), body_style)
-                    for header in headers
-                ]
-            )
-
-        table = Table(
-            data,
-            colWidths=[0.35 * inch, 0.95 * inch, 0.8 * inch, 0.75 * inch, 1.0 * inch, 1.15 * inch, 1.7 * inch],
-        )
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8e8")),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#bbbbbb")),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
-                ]
-            )
-        )
-        return table
-
-    def _report_image(self, image_path: Path) -> Image:
-        max_width = 7.0 * inch
-        max_height = 8.5 * inch
-        image = Image(str(image_path))
-        width_scale = max_width / image.imageWidth
-        height_scale = max_height / image.imageHeight
-        scale = min(width_scale, height_scale, 1)
-        image.drawWidth = image.imageWidth * scale
-        image.drawHeight = image.imageHeight * scale
-        return image
-
-    def _report_path(self, file_name: str, sn: str, device_date: str) -> Path:
-        device_stem = Path(file_name).stem
-        safe_name = f"{self.backend._safe_title_part(sn)}-{self.backend._safe_title_part(device_date)}"
-        report_folder = Path(tempfile.gettempdir()) / "DeviceChecklistReports" / device_stem
-        return report_folder / f"{safe_name}.pdf"
-
-    def _all_devices_report_path(self) -> Path:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        report_folder = Path(tempfile.gettempdir()) / "DeviceChecklistReports"
-        return report_folder / f"all-devices-{timestamp}.pdf"
-
-    def _device_photo_paths(self, file_name: str) -> list[Path]:
-        photo_folder = self.photos_location / Path(file_name).stem
-        if not photo_folder.exists():
-            return []
-        image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
-        return sorted(path for path in photo_folder.iterdir() if path.suffix.lower() in image_suffixes)
-
 
 class PhotoPreviewWindow(tk.Toplevel):
     def __init__(self, parent: DeviceChecklistApp, image_paths: list[Path]):
@@ -1400,16 +1072,11 @@ class ChecklistWindow(tk.Toplevel):
 
         source_path = Path(selected)
         output_path = self._next_photo_path(source_path.suffix or ".jpg")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, output_path)
-        return output_path
+        return copy_photo(source_path, output_path)
 
     def _next_photo_path(self, suffix: str) -> Path:
-        device_stem = Path(self.file_name).stem
         category = self.category_names[self.category_index]
-        safe_category = self.backend._safe_title_part(category)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        return self.photos_location / device_stem / f"{timestamp}_{safe_category}{suffix.lower()}"
+        return next_photo_path(self.photos_location, self.backend, self.file_name, category, suffix)
 
     def close(self) -> None:
         try:
