@@ -142,7 +142,7 @@ PDF reports are generated in the system temporary folder and opened automaticall
 
 ## PDF Reports
 
-Use **Reports** to choose between a selected-device report, an all-devices table report, exporting the visible table to CSV, or previewing selected-device photos. Reports open automatically in the browser or system PDF viewer.
+Use **Reports** to create reports for selected devices, create a table report for selected or visible devices, export selected or visible rows to CSV, or preview selected-device photos. Reports open automatically in the browser or system PDF viewer.
 
 Selected-device reports include:
 
@@ -153,13 +153,13 @@ Selected-device reports include:
 - Saved photos for the device.
 - The project logo when a supported logo file is present.
 
-All-devices reports include the device table with serial number, date, status, comment, and CSV filename.
+Table reports include the selected rows when devices are selected, or the current visible table when nothing is selected.
 
 ## Table Workflow
 
 The main device table includes dashboard counters, status filters, search, sortable columns, and a last-updated column based on each device CSV file's modified time.
 
-Use **Reports** > **Export visible table CSV** to export the currently visible table after search and status filters are applied.
+Use **Reports** > **Export visible table CSV** to export selected rows, or the currently visible table when nothing is selected.
 
 Use **Reports** > **Preview selected device photos** after selecting a device to browse saved photos. If an image type cannot be previewed inside the app, use **Open Photo** from the preview window.
 

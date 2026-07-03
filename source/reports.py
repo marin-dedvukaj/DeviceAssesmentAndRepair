@@ -102,7 +102,7 @@ def build_all_devices_report(device_rows: Iterable[dict[str, str]]) -> Path:
         )
 
     story = [
-        Paragraph("All Devices Report", title_style),
+        Paragraph("Device Table Report", title_style),
         Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", normal_style),
         Spacer(1, 0.2 * inch),
     ]

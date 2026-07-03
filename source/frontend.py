@@ -54,7 +54,7 @@ class DeviceChecklistApp(tk.Tk):
         self.sort_reverse = False
         self.counter_labels: dict[str, tk.Label] = {}
         self.filter_buttons: dict[str, tk.Button] = {}
-        self.visible_device_rows: list[dict[str, str]] = []
+        self.visible_device_rows: list[dict[str, str | float]] = []
 
         self._configure_style()
         self._build_layout()
@@ -179,7 +179,7 @@ class DeviceChecklistApp(tk.Tk):
         table_area.pack(fill="both", expand=True, padx=10, pady=10)
 
         columns = ("id", "sn", "date", "status", "comment", "updated", "file")
-        self.table = ttk.Treeview(table_area, columns=columns, show="headings", selectmode="browse")
+        self.table = ttk.Treeview(table_area, columns=columns, show="headings", selectmode="extended")
 
         headings = {
             "id": "ID",
@@ -325,8 +325,9 @@ class DeviceChecklistApp(tk.Tk):
             messagebox.showerror("New Device", str(exc), parent=self)
 
     def export_visible_devices(self) -> None:
-        if not self.visible_device_rows:
-            messagebox.showinfo("Export Table CSV", "No visible devices to export.", parent=self)
+        export_rows = self._selected_device_rows() or self.visible_device_rows
+        if not export_rows:
+            messagebox.showinfo("Export Table CSV", "No devices to export.", parent=self)
             return
 
         output = filedialog.asksaveasfilename(
@@ -343,7 +344,7 @@ class DeviceChecklistApp(tk.Tk):
             with Path(output).open("w", newline="", encoding="utf-8") as csv_file:
                 writer = csv.writer(csv_file)
                 writer.writerow(headers)
-                for row in self.visible_device_rows:
+                for row in export_rows:
                     writer.writerow(
                         [
                             row["id"],
@@ -391,13 +392,16 @@ class DeviceChecklistApp(tk.Tk):
         self._change_selected_status("notFixable")
 
     def preview_photos(self) -> None:
-        if not self.selected_file_name:
+        selected_files = self._selected_file_names()
+        if not selected_files:
             messagebox.showinfo("Preview Photos", "Select a device first.", parent=self)
             return
 
-        image_paths = device_photo_paths(self.photos_location, self.selected_file_name)
+        image_paths = []
+        for file_name in selected_files:
+            image_paths.extend(device_photo_paths(self.photos_location, file_name))
         if not image_paths:
-            messagebox.showinfo("Preview Photos", "No photos found for this device.", parent=self)
+            messagebox.showinfo("Preview Photos", "No photos found for the selected device(s).", parent=self)
             return
 
         PhotoPreviewWindow(self, image_paths)
@@ -406,22 +410,30 @@ class DeviceChecklistApp(tk.Tk):
         ReportMenu(self)
 
     def print_device_report(self) -> None:
-        if not self.selected_file_name:
+        selected_files = self._selected_file_names()
+        if not selected_files:
             messagebox.showinfo("Print Report", "Select a device first.", parent=self)
             return
 
         try:
-            self._ensure_configured_checklist_items(self.selected_file_name)
-            report_path = build_device_report(self.backend, self.selected_file_name, self.photos_location)
-            opened = webbrowser.open(report_path.as_uri())
-            if not opened:
-                messagebox.showinfo("Print Report", f"Report created:\n{report_path}", parent=self)
+            created_paths = []
+            for file_name in selected_files:
+                self._ensure_configured_checklist_items(file_name)
+                report_path = build_device_report(self.backend, file_name, self.photos_location)
+                created_paths.append(report_path)
+                webbrowser.open(report_path.as_uri())
+            if created_paths:
+                messagebox.showinfo("Print Report", f"Created {len(created_paths)} report(s).", parent=self)
         except Exception as exc:
             messagebox.showerror("Print Report", str(exc), parent=self)
 
     def print_all_devices_report(self) -> None:
         try:
-            report_path = build_all_devices_report(self._device_table_rows())
+            report_rows = self._selected_device_rows() or self.visible_device_rows
+            if not report_rows:
+                messagebox.showinfo("All Devices Report", "No devices to include.", parent=self)
+                return
+            report_path = build_all_devices_report(report_rows)
             opened = webbrowser.open(report_path.as_uri())
             if not opened:
                 messagebox.showinfo("All Devices Report", f"Report created:\n{report_path}", parent=self)
@@ -524,9 +536,23 @@ class DeviceChecklistApp(tk.Tk):
     def _on_select(self, _event) -> None:
         selected = self.table.selection()
         if not selected:
+            self.selected_file_name = None
+            self.selected_label.config(text="No device selected")
             return
         self.selected_file_name = selected[0]
-        self.selected_label.config(text=self.selected_file_name)
+        if len(selected) == 1:
+            self.selected_label.config(text=self.selected_file_name)
+        else:
+            self.selected_label.config(text=f"{len(selected)} devices selected")
+
+    def _selected_file_names(self) -> list[str]:
+        return [str(file_name) for file_name in self.table.selection()]
+
+    def _selected_device_rows(self) -> list[dict[str, str | float]]:
+        selected_files = set(self._selected_file_names())
+        if not selected_files:
+            return []
+        return [row for row in self.visible_device_rows if str(row["file"]) in selected_files]
 
 class PhotoPreviewWindow(tk.Toplevel):
     def __init__(self, parent: DeviceChecklistApp, image_paths: list[Path]):
@@ -649,7 +675,7 @@ class ReportMenu(tk.Toplevel):
 
         tk.Button(
             self,
-            text="Selected device report",
+            text="Selected device report(s)",
             command=self._run_device_report,
             bg="#23456f",
             fg="#ffffff",
@@ -660,7 +686,7 @@ class ReportMenu(tk.Toplevel):
 
         tk.Button(
             self,
-            text="All devices table",
+            text="Selected/visible table",
             command=self._run_all_devices_report,
             bg="#ffffff",
             fg="#222222",
